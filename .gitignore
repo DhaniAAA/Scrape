@@ -43,17 +43,16 @@ config.py
 *.env
 .env.local
 .env.*.local
-
+.env.example
 # Output files
-*.json
+# *.json
 !config.example.py
-manhwa_link/
 comics-list.json
-manhwa_list.json
 manga_local_image_links.json
 komikcast_scrape_results.json
 supabase_upload_progress.json
-
+# *.md
+*.txt
 # Progress tracking
 *_progress.json
 progress.json
