@@ -8,8 +8,7 @@ on:
         required: false
         default: '10'
   schedule:
-    - cron: '*/5 * * * *'  # setiap 5 menit
-
+    - cron: '0 14 * * *'  
 jobs:
   run-script:
     runs-on: ubuntu-latest

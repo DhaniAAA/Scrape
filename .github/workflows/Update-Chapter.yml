@@ -17,7 +17,7 @@ on:
 
   # 2. Pemicu OTOMATIS (sesuai jadwal)
   schedule:
-    - cron: '*/5 * * * *'  # Setiap 5 menit
+    - cron: '0 14 * * *'  
       
 jobs:
   run-script:
