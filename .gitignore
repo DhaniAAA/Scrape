@@ -52,7 +52,7 @@ comics-list.json
 manga_local_image_links.json
 komikcast_scrape_results.json
 supabase_upload_progress.json
-# *.md
+*.md
 # Progress tracking
 *_progress.json
 progress.json

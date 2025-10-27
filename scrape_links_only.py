@@ -35,38 +35,37 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ==================== KONFIGURASI ====================
-# Load configuration from .env file
-
 # Supabase Configuration
 SUPABASE_URL = os.getenv('SUPABASE_URL', 'https://nnaizqqgdtqmfpwzcspe.supabase.co')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY', '')
 BUCKET_NAME = os.getenv('BUCKET_NAME', 'manga-data')
-ENABLE_SUPABASE_UPLOAD = os.getenv('ENABLE_SUPABASE_UPLOAD', 'True').lower() == 'true'
+ENABLE_SUPABASE_UPLOAD = True  # Set False untuk hanya save lokal
 
 # Scraping Configuration
-JSON_FILE = os.getenv('JSON_FILE', 'merger-link.json')
-OUTPUT_FILE = os.getenv('OUTPUT_FILE', 'manga_local_image_links.json')
-MAX_COMICS_TO_PROCESS = int(os.getenv('MAX_COMICS_TO_PROCESS', '50'))
-PROGRESS_FILE = os.getenv('PROGRESS_FILE', 'scrape_links_progress.json')
+JSON_FILE = 'merger_link.json'  # File JSON berisi daftar komik
+OUTPUT_FILE = 'manga_local_image_links.json'  # Output file lokal untuk link gambar
+MAX_COMICS_TO_PROCESS = 50  # Jumlah komik yang akan diproses
+PROGRESS_FILE = 'scrape_links_progress.json'
+
 
 # Auto Update Mode (cek semua komik yang ada chapter baru)
-AUTO_UPDATE_MODE = os.getenv('AUTO_UPDATE_MODE', 'True').lower() == 'true'
-AUTO_UPDATE_MAX_COMICS = int(os.getenv('AUTO_UPDATE_MAX_COMICS', '100'))
+AUTO_UPDATE_MODE = True  # Set True untuk auto cek semua komik
+AUTO_UPDATE_MAX_COMICS = 100  # Max komik yang di-cek per run (untuk avoid timeout)
 
 # Speed Configuration
-DELAY_BETWEEN_CHAPTERS = float(os.getenv('DELAY_BETWEEN_CHAPTERS', '0.5'))
-DELAY_BETWEEN_COMICS = float(os.getenv('DELAY_BETWEEN_COMICS', '1'))
-REQUEST_TIMEOUT = int(os.getenv('REQUEST_TIMEOUT', '10'))
+DELAY_BETWEEN_CHAPTERS = 0.5  # Delay antar chapter (detik) - Turunkan untuk lebih cepat
+DELAY_BETWEEN_COMICS = 1  # Delay antar komik (detik)
+REQUEST_TIMEOUT = 10  # Timeout untuk request (detik)
 
 # Parallel Processing Configuration
-MAX_CHAPTER_WORKERS = int(os.getenv('MAX_CHAPTER_WORKERS', '5'))
-MAX_COMIC_WORKERS = int(os.getenv('MAX_COMIC_WORKERS', '2'))
-ENABLE_PARALLEL = os.getenv('ENABLE_PARALLEL', 'True').lower() == 'true'
+MAX_CHAPTER_WORKERS = 5  # Jumlah thread untuk scraping chapter secara parallel
+MAX_COMIC_WORKERS = 2  # Jumlah thread untuk scraping komik secara parallel
+ENABLE_PARALLEL = True  # Set False untuk disable parallel processing
 
 # Headers untuk request
 HEADERS = {
-    'User-Agent': os.getenv('USER_AGENT', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'),
-    'Referer': os.getenv('REFERER', 'https://komikcast03.com/')
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Referer': 'https://komikcast03.com/'
 }
 
 # ==================== FUNGSI UTILITAS ====================
