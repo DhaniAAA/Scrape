@@ -1,0 +1,26 @@
+name: Update Chapter Manhwa/Manhua v2
+
+on:
+  schedule:
+    # Setiap hari jam 01.00 UTC (≡ 08.00 WIB)
+    - cron: '0 23 * * *'
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run script
+        run: python scrape_links_only.py
+
+      - name: Run script
+        run: generate-manifest.py
