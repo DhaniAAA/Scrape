@@ -5,11 +5,13 @@ Upload this file to bucket root to enable frontend listing
 
 from supabase import create_client
 import json
-
+from dotenv import load_dotenv
+import os
+ 
 # Supabase Configuration
-SUPABASE_URL = "https://nnaizqqgdtqmfpwzcspe.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5uYWl6cXFnZHRxbWZwd3pjc3BlIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MDY1NDA4NiwiZXhwIjoyMDc2MjMwMDg2fQ.Kn87MMhIbIK83_JBV6wqHKWQkMmmtjTqbFUrn6W-KBQ"
-BUCKET_NAME = "manga-data"
+SUPABASE_URL = os.getenv('SUPABASE_URL', 'https://nnaizqqgdtqmfpwzcspe.supabase.co')
+SUPABASE_KEY = os.getenv('SUPABASE_KEY', '')
+BUCKET_NAME = os.getenv('BUCKET_NAME', 'manga-data')
 
 def generate_manifest():
     """Generate comics-list.json from bucket"""

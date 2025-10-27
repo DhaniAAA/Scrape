@@ -47,6 +47,7 @@ config.py
 # Output files
 # *.json
 !config.example.py
+detail_komik.py
 comics-list.json
 manga_local_image_links.json
 komikcast_scrape_results.json
