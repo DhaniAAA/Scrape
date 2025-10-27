@@ -5,16 +5,20 @@ name: Update Chapter Manhwa/Manhua
 #     # Setiap hari jam 01.00 UTC (≡ 08.00 WIB)
 #     - cron: '0 23 * * *'
 
+
 on:
+  # 1. Pemicu MANUAL (dengan input)
+  workflow_dispatch:
+    inputs:
+      max_manhwa:
+        description: 'Maximum number of Manhwa to scrape'
+        required: false
+        default: '10'
+
+  # 2. Pemicu OTOMATIS (sesuai jadwal)
   schedule:
     - cron: '*/5 * * * *'  # Setiap 5 menit
-
-workflow_dispatch:
-  input:
-    max_manhwa:
-      description: 'Maximum number of Manhwa to scrape'
-      required: false
-      default: '10'
+      
 jobs:
   run-script:
     runs-on: ubuntu-latest
