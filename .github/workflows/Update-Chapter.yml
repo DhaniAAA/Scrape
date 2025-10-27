@@ -31,6 +31,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      
+      - name: Print timestamps (UTC & WIB)
+        run: |
+          echo "UTC now      : $(date -u '+%Y-%m-%d %H:%M:%S')"
+          echo "Asia/Jakarta : $(TZ=Asia/Jakarta date '+%Y-%m-%d %H:%M:%S')"
 
       - name: Set up Python
         uses: actions/setup-python@v5

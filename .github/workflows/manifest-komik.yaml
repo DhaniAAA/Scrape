@@ -2,18 +2,16 @@ name: Generate Manifest Komik
 
 on:
   workflow_dispatch:
-    inputs:
-      max_komik:
-        description: 'Maximum number of Komik to scrape (unused here)'
-        required: false
-        default: '10'
   schedule:
-    - cron: '0 14 * * *'  
+    # Jalan setiap hari jam 21:00 WIB (14:00 UTC)
+    - cron: '0 14 * * *'
+    # OPTIONAL: debug sementara, jalan setiap 5 menit (hapus setelah beres)
+    # - cron: '*/5 * * * *'
+
 jobs:
   run-script:
     runs-on: ubuntu-latest
 
-    # ====== SEKALI TULIS SEMUA ENV/SECRETS DI SINI ======
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
@@ -21,6 +19,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Print timestamps (UTC & WIB)
+        run: |
+          echo "UTC now      : $(date -u '+%Y-%m-%d %H:%M:%S')"
+          echo "Asia/Jakarta : $(TZ=Asia/Jakarta date '+%Y-%m-%d %H:%M:%S')"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -35,7 +38,6 @@ jobs:
             pip install -r requirements.txt
           else
             echo "requirements.txt tidak ditemukan — install paket minimum."
-            # Minimal libs yang dibutuhkan script ini
             pip install supabase python-dotenv
           fi
 
