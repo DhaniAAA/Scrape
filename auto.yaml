@@ -21,6 +21,3 @@ jobs:
 
       - name: Run script
         run: python scrape_links_only.py
-      
-      - name: Run script
-        run: python scrape_links_only.py
