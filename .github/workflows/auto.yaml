@@ -1,9 +1,13 @@
 name: Update Chapter Manhwa/Manhua
 
+# on:
+#   schedule:
+#     # Setiap hari jam 01.00 UTC (≡ 08.00 WIB)
+#     - cron: '0 23 * * *'
+
 on:
   schedule:
-    # Setiap hari jam 01.00 UTC (≡ 08.00 WIB)
-    - cron: '0 23 * * *'
+    - cron: '*/5 * * * *'  # Setiap 5 menit
 
 jobs:
   run-script:
@@ -19,5 +23,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run script
+      - name: Run Scrape Links Script
         run: python scrape_links_only.py
+
+      - name: Run Generate Manifest Script
+        run: python generate-manifest.py
