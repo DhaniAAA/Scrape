@@ -17,7 +17,7 @@ on:
 
   # 2. Pemicu OTOMATIS (sesuai jadwal)
   schedule:
-    - cron: '0 14 * * *'  
+    - cron: '0 20 * * *'  
       
 jobs:
   run-script:
@@ -31,7 +31,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Print timestamps (UTC & WIB)
         run: |
           echo "UTC now      : $(date -u '+%Y-%m-%d %H:%M:%S')"

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   schedule:
     # Jalan setiap hari jam 21:00 WIB (14:00 UTC)
-    - cron: '0 14 * * *'
+    - cron: '0 20 * * *'
     # OPTIONAL: debug sementara, jalan setiap 5 menit (hapus setelah beres)
     # - cron: '*/5 * * * *'
 
