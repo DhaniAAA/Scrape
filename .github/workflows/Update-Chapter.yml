@@ -50,4 +50,4 @@ jobs:
           fi
 
       - name: Run Generate Manifest Script
-        run: python generate-manifest.py
+        run: python scrape_links_only.py
