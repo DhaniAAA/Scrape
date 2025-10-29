@@ -54,5 +54,5 @@ jobs:
             pip install supabase python-dotenv
           fi
 
-      - name: Run Generate Manifest Script
+      - name: Run Update Chapter
         run: python scrape_links_only.py
