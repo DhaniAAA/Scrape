@@ -26,6 +26,7 @@ import json
 import os
 import re
 import time
+from datetime import datetime, timedelta
 from supabase import create_client, Client
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
@@ -77,6 +78,46 @@ def thread_safe_print(*args, **kwargs):
     """Print yang thread-safe untuk parallel processing"""
     with print_lock:
         print(*args, **kwargs)
+
+def convert_relative_time_to_iso(relative_time_str):
+    """
+    Konversi string waktu relatif (e.g., '7 years ago', '2 days ago') 
+    menjadi ISO 8601 timestamp (e.g., '2018-11-09T10:30:00')
+    """
+    if not relative_time_str or relative_time_str == 'N/A':
+        # Jika tidak ada waktu, gunakan waktu sekarang
+        return datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+    
+    # Parse string relatif
+    match = re.search(r'(\d+)\s+(year|month|week|day|hour|minute)s?\s+ago', relative_time_str, re.IGNORECASE)
+    
+    if not match:
+        # Jika format tidak dikenali, gunakan waktu sekarang
+        return datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+    
+    amount = int(match.group(1))
+    unit = match.group(2).lower()
+    
+    now = datetime.now()
+    
+    # Hitung waktu berdasarkan unit
+    if unit == 'year':
+        target_time = now - timedelta(days=amount * 365)
+    elif unit == 'month':
+        target_time = now - timedelta(days=amount * 30)
+    elif unit == 'week':
+        target_time = now - timedelta(weeks=amount)
+    elif unit == 'day':
+        target_time = now - timedelta(days=amount)
+    elif unit == 'hour':
+        target_time = now - timedelta(hours=amount)
+    elif unit == 'minute':
+        target_time = now - timedelta(minutes=amount)
+    else:
+        target_time = now
+    
+    # Return dalam format ISO 8601
+    return target_time.strftime('%Y-%m-%dT%H:%M:%S')
 
 def sanitize_filename(name):
     """Membersihkan nama file dari karakter tidak valid untuk Supabase Storage"""
@@ -306,10 +347,14 @@ def scrape_comic_details(comic_url):
                 chapter_text = link_element.get_text(strip=True).replace('\n', ' ')
                 chapter_text = re.sub(r'\s+', ' ', chapter_text).strip()
                 
+                # Ambil waktu rilis dan konversi ke ISO 8601
+                waktu_rilis_raw = time_element.get_text(strip=True) if time_element else 'N/A'
+                waktu_rilis_iso = convert_relative_time_to_iso(waktu_rilis_raw)
+                
                 chapter_list.append({
                     'chapter': chapter_text,
                     'link': link_element['href'],
-                    'waktu_rilis': time_element.get_text(strip=True) if time_element else 'N/A'
+                    'waktu_rilis': waktu_rilis_iso  # Gunakan format ISO 8601
                 })
         
         return {
