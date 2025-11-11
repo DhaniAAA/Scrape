@@ -42,4 +42,4 @@ jobs:
           fi
 
       - name: Run Generate Manifest Script
-        run: python generate-manifest.py
+        run: python all-manhwa.py
