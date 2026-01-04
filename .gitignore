@@ -3,7 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
-.Python
+#.Python
 build/
 develop-eggs/
 dist/
@@ -47,7 +47,6 @@ config.py
 # Output files
 # *.json
 !config.example.py
-detail_komik.py
 comics-list.json
 manga_local_image_links.json
 komikcast_scrape_results.json
