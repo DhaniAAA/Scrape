@@ -5,20 +5,19 @@ name: Update Chapter Manhwa/Manhua
 #     # Setiap hari jam 01.00 UTC (≡ 08.00 WIB)
 #     - cron: '0 23 * * *'
 
-
 on:
   # 1. Pemicu MANUAL (dengan input)
   workflow_dispatch:
     inputs:
       max_manhwa:
-        description: 'Maximum number of Manhwa to scrape'
+        description: "Maximum number of Manhwa to scrape"
         required: false
-        default: '10'
+        default: "255"
 
   # 2. Pemicu OTOMATIS (sesuai jadwal)
   schedule:
-    - cron: '0 20 * * *'  
-      
+    - cron: "0 20 * * *"
+
 jobs:
   run-script:
     runs-on: ubuntu-latest
@@ -27,7 +26,7 @@ jobs:
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-      BUCKET_NAME:  ${{ secrets.BUCKET_NAME }}
+      BUCKET_NAME: ${{ secrets.BUCKET_NAME }}
 
     steps:
       - uses: actions/checkout@v4
@@ -40,8 +39,8 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          cache: 'pip'
+          python-version: "3.11"
+          cache: "pip"
 
       - name: Install dependencies (with fallback)
         run: |
