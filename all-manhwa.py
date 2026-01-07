@@ -1,5 +1,6 @@
 import os
 import json
+import time
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from datetime import datetime
@@ -16,14 +17,77 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def download_json(path: str):
-    """Helper untuk men-download file JSON dari Supabase."""
-    try:
-        response = supabase.storage.from_(BUCKET_NAME).download(path)
-        return json.loads(response.decode('utf-8'))
-    except Exception as e:
-        print(f"Gagal men-download {path}: {e}")
-        return None
+def download_json(path: str, max_retries: int = 3):
+    """Helper untuk men-download file JSON dari Supabase dengan retry."""
+
+    for attempt in range(max_retries):
+        try:
+            response = supabase.storage.from_(BUCKET_NAME).download(path)
+
+            # Handle berbagai format response
+            if response is None:
+                if attempt < max_retries - 1:
+                    time.sleep(0.5)  # Wait before retry
+                    continue
+                return None
+
+            # Jika response sudah berupa dict (sudah di-parse)
+            if isinstance(response, dict):
+                # Cek apakah ini error response
+                if 'error' in response or 'message' in response:
+                    print(f"     [DEBUG] Error response: {response}")
+                    if attempt < max_retries - 1:
+                        time.sleep(0.5)
+                        continue
+                    return None
+                return response
+
+            # Jika response berupa list (sudah di-parse)
+            if isinstance(response, list):
+                return response
+
+            # Jika response berupa bytes
+            if isinstance(response, bytes):
+                try:
+                    return json.loads(response.decode('utf-8'))
+                except json.JSONDecodeError:
+                    # Mungkin bytes berisi error message
+                    error_text = response.decode('utf-8', errors='ignore')
+                    if 'not found' in error_text.lower() or 'error' in error_text.lower():
+                        print(f"     [DEBUG] File not found or error: {error_text[:100]}")
+                        return None
+                    raise
+
+            # Jika response berupa string
+            if isinstance(response, str):
+                try:
+                    return json.loads(response)
+                except json.JSONDecodeError:
+                    if 'not found' in response.lower() or 'error' in response.lower():
+                        print(f"     [DEBUG] Error string: {response[:100]}")
+                        return None
+                    raise
+
+            # Fallback: coba decode sebagai bytes
+            return json.loads(response.decode('utf-8'))
+
+        except json.JSONDecodeError as e:
+            if attempt < max_retries - 1:
+                time.sleep(0.5)
+                continue
+            print(f"     [DEBUG] JSON decode error untuk {path}: {e}")
+            return None
+        except Exception as e:
+            error_str = str(e)
+            # Jangan print jika file memang tidak ada
+            if 'not found' not in error_str.lower() and 'object not found' not in error_str.lower():
+                if attempt < max_retries - 1:
+                    time.sleep(0.5)
+                    continue
+                print(f"     [DEBUG] Download error {path}: {e}")
+            return None
+
+    return None
 
 def upload_json(path: str, data: dict | list):
     """Helper untuk meng-upload file JSON ke Supabase (menimpa jika sudah ada)."""
@@ -32,7 +96,7 @@ def upload_json(path: str, data: dict | list):
         json_data = json.dumps(data, indent=2)
         # Ubah string ke bytes
         json_bytes = json_data.encode('utf-8')
-        
+
         # Upload
         supabase.storage.from_(BUCKET_NAME).upload(
             path,
@@ -48,7 +112,7 @@ def get_waktu_rilis_timestamp(chapter: dict) -> int:
     waktu_rilis_str = chapter.get('waktu_rilis')
     if not waktu_rilis_str:
         return 0
-        
+
     try:
         # Coba parse format ISO 8601 (e.g., "2023-12-20T10:00:00Z")
         dt = datetime.fromisoformat(waktu_rilis_str.replace('Z', '+00:00'))
@@ -60,7 +124,7 @@ def get_waktu_rilis_timestamp(chapter: dict) -> int:
         except Exception:
             # Gagal parse, kembalikan 0
             return 0
-            
+
     # Kembalikan sebagai epoch milidetik
     return int(dt.timestamp() * 1000)
 
@@ -70,7 +134,7 @@ def main():
     menjadi 'all-manhwa-metadata.json'.
     """
     print("🚀 Memulai proses pembuatan metadata gabungan...")
-    
+
     # 1. Ambil daftar komik (cara lama, yang dilakukan scraper)
     comics_list = download_json("comics-list.json")
     if not comics_list:
@@ -80,12 +144,12 @@ def main():
     print(f"📚 Ditemukan {len(comics_list)} komik. Memproses satu per satu...")
 
     all_metadata = []
-    
+
     # 2. Loop setiap komik untuk mengambil datanya (N+1 query)
     # Ini lambat, tapi ini adalah tugas scraper, bukan aplikasi web
     for index, slug in enumerate(comics_list):
         print(f"  -> Memproses ({index + 1}/{len(comics_list)}): {slug}")
-        
+
         try:
             # Ambil metadata individual
             metadata = download_json(f"{slug}/metadata.json")
@@ -95,16 +159,19 @@ def main():
 
             # Ambil chapters individual
             chapters_data = download_json(f"{slug}/chapters.json")
-            if not chapters_data or not chapters_data.get('chapters'):
-                print(f"     ⚠️  Skipping: chapters.json tidak ditemukan untuk {slug}")
+            if not chapters_data:
+                print(f"     ⚠️  Skipping: chapters.json tidak ada/gagal download untuk {slug}")
                 continue
-            
+            if not chapters_data.get('chapters'):
+                print(f"     ⚠️  Skipping: chapters.json kosong (no chapters array) untuk {slug}")
+                continue
+
             all_chapters = chapters_data.get('chapters', [])
-            
+
             # 3. Ekstrak data yang diperlukan
             latest_chapters_data = all_chapters[-2:] # Ambil 2 chapter terakhir
             latest_chapters_formatted = []
-            
+
             if latest_chapters_data:
                 latest_chapters_formatted = [
                     {
@@ -134,14 +201,14 @@ def main():
                 "latestChapters": latest_chapters_formatted,
                 "lastUpdateTime": last_update_time # Timestamp untuk sorting
             }
-            
+
             all_metadata.append(manhwa_data)
 
         except Exception as e:
             print(f"     ❌ Error memproses {slug}: {e}")
 
     print(f"\n✨ Selesai memproses {len(all_metadata)} manhwa.")
-    
+
     # 5. Upload file gabungan
     if all_metadata:
         print("☁️  Meng-upload 'all-manhwa-metadata.json' ke Supabase...")
