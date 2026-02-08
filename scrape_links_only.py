@@ -26,6 +26,7 @@ import json
 import os
 import re
 import time
+import random
 from datetime import datetime, timedelta
 from supabase import create_client, Client
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -63,11 +64,26 @@ MAX_CHAPTER_WORKERS = 5  # Jumlah thread untuk scraping chapter secara parallel
 MAX_COMIC_WORKERS = 2  # Jumlah thread untuk scraping komik secara parallel
 ENABLE_PARALLEL = True  # Set False untuk disable parallel processing
 
-# Headers untuk request
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-    'Referer': 'https://komikcast03.com/'
-}
+# Headers untuk request - lebih realistic untuk menghindari 403
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+]
+
+def get_headers():
+    """Get random headers untuk menghindari blocking"""
+    return {
+        'User-Agent': random.choice(USER_AGENTS),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+    }
+
+# Legacy HEADERS for compatibility
+HEADERS = get_headers()
 
 # ==================== FUNGSI UTILITAS ====================
 
@@ -262,6 +278,32 @@ def get_existing_chapters_full(supabase, comic_slug):
         # Jika file tidak ada atau error, return None
         return None
 
+def get_comic_metadata_from_supabase(supabase, comic_slug):
+    """Dapatkan metadata komik dari Supabase untuk cek status (Completed/Ongoing)"""
+    try:
+        metadata_path = f"{comic_slug}/metadata.json"
+        response = supabase.storage.from_(BUCKET_NAME).download(metadata_path)
+
+        if response:
+            metadata = json.loads(response)
+            return metadata
+        return None
+    except:
+        return None
+
+def is_comic_completed_in_supabase(supabase, comic_slug):
+    """Cek apakah komik sudah complete di Supabase (status Completed/Tamat)"""
+    try:
+        metadata = get_comic_metadata_from_supabase(supabase, comic_slug)
+        if metadata and 'metadata' in metadata:
+            status = metadata['metadata'].get('Status', '')
+            # Cek berbagai variasi status completed
+            if any(x in status.lower() for x in ['complete', 'tamat', 'end', 'finished']):
+                return True
+        return False
+    except:
+        return False
+
 def is_comic_completed(supabase, comic_slug, total_chapters, status):
     """Cek apakah komik sudah complete (tamat dan semua chapter sudah ada)"""
     # Jika status bukan 'Completed', return False
@@ -282,7 +324,8 @@ def has_new_chapters(supabase, comic_url, comic_slug):
         # Scrape detail untuk dapat total chapters dari website
         details = scrape_comic_details(comic_url)
         if not details:
-            return False, 0, 0
+            # Return -1, -1 untuk menandakan error (bukan 0 chapters)
+            return None, -1, -1
 
         total_chapters_website = len(details['chapters'])
 
@@ -295,146 +338,162 @@ def has_new_chapters(supabase, comic_url, comic_slug):
 
         return has_new, total_chapters_website, total_chapters_supabase
     except Exception as e:
-        return False, 0, 0
+        return None, -1, -1
 
 # ==================== SCRAPING FUNCTIONS ====================
 
-def scrape_comic_details(comic_url):
+def scrape_comic_details(comic_url, max_retries=3):
     """Scrape detail komik dari halaman detail - komikindo.ch structure"""
-    try:
-        print(f"  → Mengambil detail dari: {comic_url}")
-        response = requests.get(comic_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
+    for attempt in range(max_retries):
+        try:
+            print(f"  → Mengambil detail dari: {comic_url}")
+            # Random delay untuk menghindari rate limiting
+            if attempt > 0:
+                delay = random.uniform(2, 5)
+                time.sleep(delay)
 
-        # Ambil informasi dasar - h1.entry-title (komikindo.ch)
-        title_element = soup.find('h1', class_='entry-title')
-        title = title_element.get_text(strip=True) if title_element else 'Unknown'
-        # Remove "Komik " prefix
-        title = re.sub(r'^Komik\s*', '', title).strip()
+            response = requests.get(comic_url, headers=get_headers(), timeout=REQUEST_TIMEOUT)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
 
-        # Ambil genre - div.genre-info a (komikindo.ch)
-        genres = []
-        genre_info = soup.find('div', class_='genre-info')
-        if genre_info:
-            genre_links = genre_info.find_all('a')
-            genres = [a.get_text(strip=True) for a in genre_links]
+            # Ambil informasi dasar - h1.entry-title (komikindo.ch)
+            title_element = soup.find('h1', class_='entry-title')
+            title = title_element.get_text(strip=True) if title_element else 'Unknown'
+            # Remove "Komik " prefix
+            title = re.sub(r'^Komik\s*', '', title).strip()
 
-        # Ambil synopsis - div.entry-content-sinopsis atau p di entry-content (komikindo.ch)
-        synopsis = ''
-        # Try specific synopsis div first
-        sinopsis_div = soup.select_one('.entry-content-sinopsis, .entry-content .sinopsis')
-        if sinopsis_div:
-            synopsis = sinopsis_div.get_text(strip=True)
-        else:
-            # Fallback: get all p elements and find the one with actual content
-            synopsis_element = soup.select_one('.entry-content')
-            if synopsis_element:
-                # Get all paragraphs
-                paragraphs = synopsis_element.find_all('p')
-                for p in paragraphs:
-                    text = p.get_text(strip=True)
-                    # Skip short text or text that starts with "Manhwa" or contains boilerplate
-                    if len(text) > 50 and 'yang dibuat oleh komikus' not in text:
-                        synopsis = text
-                        break
-                # If still no good synopsis, get the first p with substantial content
-                if not synopsis and paragraphs:
+            # Ambil genre - div.genre-info a (komikindo.ch)
+            genres = []
+            genre_info = soup.find('div', class_='genre-info')
+            if genre_info:
+                genre_links = genre_info.find_all('a')
+                genres = [a.get_text(strip=True) for a in genre_links]
+
+            # Ambil synopsis - div.entry-content-sinopsis atau p di entry-content (komikindo.ch)
+            synopsis = ''
+            # Try specific synopsis div first
+            sinopsis_div = soup.select_one('.entry-content-sinopsis, .entry-content .sinopsis')
+            if sinopsis_div:
+                synopsis = sinopsis_div.get_text(strip=True)
+            else:
+                # Fallback: get all p elements and find the one with actual content
+                synopsis_element = soup.select_one('.entry-content')
+                if synopsis_element:
+                    # Get all paragraphs
+                    paragraphs = synopsis_element.find_all('p')
                     for p in paragraphs:
                         text = p.get_text(strip=True)
-                        if len(text) > 20:
+                        # Skip short text or text that starts with "Manhwa" or contains boilerplate
+                        if len(text) > 50 and 'yang dibuat oleh komikus' not in text:
                             synopsis = text
                             break
+                    # If still no good synopsis, get the first p with substantial content
+                    if not synopsis and paragraphs:
+                        for p in paragraphs:
+                            text = p.get_text(strip=True)
+                            if len(text) > 20:
+                                synopsis = text
+                                break
 
-        # Clean up synopsis
-        if synopsis:
-            # Remove "Manhwa/Manhua/Manga X yang dibuat oleh komikus bernama Y ini bercerita tentang" prefix
-            # Pattern matches: "Manhwa X yang dibuat oleh komikus bernama Y ini bercerita tentang"
-            synopsis = re.sub(
-                r'^(Manhwa|Manhua|Manga)\s+[^.]+yang dibuat oleh[^.]+bercerita tentang\s*',
-                '', synopsis, flags=re.IGNORECASE | re.DOTALL
-            )
-            # Also try simpler pattern if above didn't work
-            synopsis = re.sub(
-                r'^.*?bercerita tentang\s*',
-                '', synopsis, flags=re.IGNORECASE | re.DOTALL
-            )
-            # Normalize whitespace (remove excessive spaces/newlines)
-            synopsis = re.sub(r'\s+', ' ', synopsis).strip()
-            # Remove leading quotes if any
-            synopsis = synopsis.strip('"').strip()
+            # Clean up synopsis
+            if synopsis:
+                # Remove "Manhwa/Manhua/Manga X yang dibuat oleh komikus bernama Y ini bercerita tentang" prefix
+                synopsis = re.sub(
+                    r'^(Manhwa|Manhua|Manga)\s+[^.]+yang dibuat oleh[^.]+bercerita tentang\s*',
+                    '', synopsis, flags=re.IGNORECASE | re.DOTALL
+                )
+                # Also try simpler pattern if above didn't work
+                synopsis = re.sub(
+                    r'^.*?bercerita tentang\s*',
+                    '', synopsis, flags=re.IGNORECASE | re.DOTALL
+                )
+                # Normalize whitespace (remove excessive spaces/newlines)
+                synopsis = re.sub(r'\s+', ' ', synopsis).strip()
+                # Remove leading quotes if any
+                synopsis = synopsis.strip('"').strip()
 
-        # Ambil metadata dari div.spe (komikindo.ch)
-        metadata = {}
-        spe = soup.find('div', class_='spe')
-        if spe:
-            spans = spe.find_all('span')
-            for span in spans:
-                text = span.get_text(strip=True)
-                if 'Status:' in text:
-                    metadata['Status'] = text.replace('Status:', '').strip()
-                if 'Jenis Komik:' in text:
-                    type_link = span.find('a')
-                    if type_link:
-                        metadata['Type'] = type_link.get_text(strip=True)
-                if 'Pengarang:' in text:
-                    metadata['Author'] = text.replace('Pengarang:', '').strip()
-                if 'Ilustrator:' in text:
-                    metadata['Ilustrator'] = text.replace('Ilustrator:', '').strip()
+            # Ambil metadata dari div.spe (komikindo.ch)
+            metadata = {}
+            spe = soup.find('div', class_='spe')
+            if spe:
+                spans = spe.find_all('span')
+                for span in spans:
+                    text = span.get_text(strip=True)
+                    if 'Status:' in text:
+                        metadata['Status'] = text.replace('Status:', '').strip()
+                    if 'Jenis Komik:' in text:
+                        type_link = span.find('a')
+                        if type_link:
+                            metadata['Type'] = type_link.get_text(strip=True)
+                    if 'Pengarang:' in text:
+                        metadata['Author'] = text.replace('Pengarang:', '').strip()
+                    if 'Ilustrator:' in text:
+                        metadata['Ilustrator'] = text.replace('Ilustrator:', '').strip()
 
-        # Ambil cover URL - div.thumb img (komikindo.ch)
-        cover_element = soup.select_one('.thumb img')
-        cover_url = None
-        if cover_element:
-            cover_url = cover_element.get('src') or cover_element.get('data-src')
+            # Ambil cover URL - div.thumb img (komikindo.ch)
+            cover_element = soup.select_one('.thumb img')
+            cover_url = None
+            if cover_element:
+                cover_url = cover_element.get('src') or cover_element.get('data-src')
 
-        # Ambil daftar chapter - div#chapter_list (komikindo.ch)
-        chapter_list = []
-        chapter_container = soup.find('div', id='chapter_list')
-        if chapter_container:
-            ul = chapter_container.find('ul')
-            if ul:
-                lis = ul.find_all('li')
-                for li in lis:
-                    try:
-                        lchx = li.find('span', class_='lchx')
-                        if lchx:
-                            a = lchx.find('a')
-                            if a:
-                                chapter_text = a.get_text(strip=True)
-                                chapter_text = re.sub(r'\s+', ' ', chapter_text).strip()
-                                chapter_link = a.get('href', '')
+            # Ambil daftar chapter - div#chapter_list (komikindo.ch)
+            chapter_list = []
+            chapter_container = soup.find('div', id='chapter_list')
+            if chapter_container:
+                ul = chapter_container.find('ul')
+                if ul:
+                    lis = ul.find_all('li')
+                    for li in lis:
+                        try:
+                            lchx = li.find('span', class_='lchx')
+                            if lchx:
+                                a = lchx.find('a')
+                                if a:
+                                    chapter_text = a.get_text(strip=True)
+                                    chapter_text = re.sub(r'\s+', ' ', chapter_text).strip()
+                                    chapter_link = a.get('href', '')
 
-                                # Release date
-                                dt = li.find('span', class_='dt')
-                                waktu_rilis = dt.get_text(strip=True) if dt else 'N/A'
-                                waktu_rilis_iso = convert_relative_time_to_iso(waktu_rilis)
+                                    # Release date
+                                    dt = li.find('span', class_='dt')
+                                    waktu_rilis = dt.get_text(strip=True) if dt else 'N/A'
+                                    waktu_rilis_iso = convert_relative_time_to_iso(waktu_rilis)
 
-                                chapter_list.append({
-                                    'chapter': chapter_text,
-                                    'link': chapter_link,
-                                    'waktu_rilis': waktu_rilis_iso
-                                })
-                    except:
-                        pass
+                                    chapter_list.append({
+                                        'chapter': chapter_text,
+                                        'link': chapter_link,
+                                        'waktu_rilis': waktu_rilis_iso
+                                    })
+                        except:
+                            pass
 
-        return {
-            'title': title,
-            'genres': genres,
-            'synopsis': synopsis,
-            'metadata': metadata,
-            'cover_url': cover_url,
-            'chapters': chapter_list
-        }
+            return {
+                'title': title,
+                'genres': genres,
+                'synopsis': synopsis,
+                'metadata': metadata,
+                'cover_url': cover_url,
+                'chapters': chapter_list
+            }
 
-    except Exception as e:
-        print(f"  ✗ Error scraping detail: {e}")
-        return None
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 403:
+                print(f"  ⚠ 403 Forbidden (attempt {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    time.sleep(random.uniform(3, 7))
+                    continue
+            print(f"  ✗ Error scraping detail: {e}")
+            return None
+        except Exception as e:
+            print(f"  ✗ Error scraping detail: {e}")
+            if attempt < max_retries - 1:
+                continue
+            return None
+    return None
 
 def scrape_chapter_images(chapter_url):
     """Scrape link gambar dari chapter - support multiple selectors"""
     try:
-        response = requests.get(chapter_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        response = requests.get(chapter_url, headers=get_headers(), timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
 
@@ -764,6 +823,7 @@ def main():
 
         indices_to_process = []
         checked_count = 0
+        skipped_completed = 0
 
         # Cek setiap komik (max AUTO_UPDATE_MAX_COMICS)
         for idx, comic in enumerate(comics_data):
@@ -774,10 +834,25 @@ def main():
             comic_url = comic.get('Link', '')
             comic_slug = sanitize_filename(comic_title)
 
+            # Skip komik yang sudah completed di Supabase
+            if is_comic_completed_in_supabase(supabase, comic_slug):
+                skipped_completed += 1
+                continue
+
             print(f"\n  [{checked_count + 1}/{AUTO_UPDATE_MAX_COMICS}] Checking: {comic_title}", end=" ")
+
+            # Tambah delay random untuk menghindari rate limiting
+            time.sleep(random.uniform(0.5, 1.5))
 
             # Cek apakah ada chapter baru
             has_new, total_web, total_db = has_new_chapters(supabase, comic_url, comic_slug)
+
+            # Handle error case (has_new is None, total_web is -1)
+            if has_new is None or total_web == -1:
+                print(f"⚠️  Error scraping (skip)")
+                checked_count += 1
+                time.sleep(0.5)
+                continue
 
             if has_new:
                 new_chapters = total_web - total_db
@@ -791,6 +866,7 @@ def main():
 
         print(f"\n📊 Hasil scan:")
         print(f"   - Komik di-cek: {checked_count}")
+        print(f"   - Komik completed (skip): {skipped_completed}")
         print(f"   - Komik dengan update: {len(indices_to_process)}")
 
         if not indices_to_process:
