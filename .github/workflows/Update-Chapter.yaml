@@ -1,0 +1,57 @@
+name: Update Chapter Manhwa/Manhua
+
+# on:
+#   schedule:
+#     # Setiap hari jam 01.00 UTC (≡ 08.00 WIB)
+#     - cron: '0 23 * * *'
+
+on:
+  # 1. Pemicu MANUAL (dengan input)
+  workflow_dispatch:
+    inputs:
+      max_manhwa:
+        description: "Maximum number of Manhwa to scrape"
+        required: false
+        default: "2000"
+
+  # 2. Pemicu OTOMATIS (sesuai jadwal)
+  schedule:
+    - cron: "0 20 * * *"
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+
+    # ====== SEKALI TULIS SEMUA ENV/SECRETS DI SINI ======
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      BUCKET_NAME: ${{ secrets.BUCKET_NAME }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Print timestamps (UTC & WIB)
+        run: |
+          echo "UTC now      : $(date -u '+%Y-%m-%d %H:%M:%S')"
+          echo "Asia/Jakarta : $(TZ=Asia/Jakarta date '+%Y-%m-%d %H:%M:%S')"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies (with fallback)
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            echo "requirements.txt tidak ditemukan — install paket minimum."
+            # Minimal libs yang dibutuhkan script ini
+            pip install supabase python-dotenv
+          fi
+
+      - name: Run Update Chapter
+        run: python scrape_links_only.py

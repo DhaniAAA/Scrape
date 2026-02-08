@@ -1,0 +1,65 @@
+name: Generate Comics List
+
+on:
+  # 1. Pemicu MANUAL
+  workflow_dispatch:
+    inputs:
+      force_regenerate:
+        description: "Force regenerate comics list"
+        required: false
+        default: "false"
+
+  # 2. Pemicu OTOMATIS (setelah Update-Chapter selesai)
+  workflow_run:
+    workflows: ["Update Chapter Manhwa/Manhua"]
+    types:
+      - completed
+
+  # 3. Jadwal harian (backup jika workflow_run tidak trigger)
+  schedule:
+    - cron: "30 20 * * *" # 30 menit setelah Update-Chapter
+
+jobs:
+  generate-list:
+    runs-on: ubuntu-latest
+    # Hanya jalankan jika workflow sebelumnya sukses atau dipicu manual
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.event.workflow_run.conclusion == 'success' }}
+
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      BUCKET_NAME: ${{ secrets.BUCKET_NAME }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Print timestamps (UTC & WIB)
+        run: |
+          echo "UTC now      : $(date -u '+%Y-%m-%d %H:%M:%S')"
+          echo "Asia/Jakarta : $(TZ=Asia/Jakarta date '+%Y-%m-%d %H:%M:%S')"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            echo "requirements.txt tidak ditemukan — install paket minimum."
+            pip install supabase python-dotenv
+          fi
+
+      - name: Generate Comics List
+        run: python generate_comics_list.py
+
+      - name: Show result
+        run: |
+          echo "📋 Comics list generated!"
+          if [ -f comics-list.json ]; then
+            echo "Total comics: $(python -c 'import json; print(len(json.load(open(\"comics-list.json\"))))')"
+          fi

@@ -40,18 +40,18 @@ load_dotenv()
 SUPABASE_URL = os.getenv('SUPABASE_URL', 'https://nnaizqqgdtqmfpwzcspe.supabase.co')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY', '')
 BUCKET_NAME = os.getenv('BUCKET_NAME', 'manga-data')
-ENABLE_SUPABASE_UPLOAD = True  # Set False untuk hanya save lokal
+ENABLE_SUPABASE_UPLOAD = True  # Set False untuk hanya save lokal (testing)
 
 # Scraping Configuration
-JSON_FILE = 'merger_link.json'  # File JSON berisi daftar komik
+JSON_FILE = 'komikindo_scrape_results.json'  # File JSON berisi daftar komik
 OUTPUT_FILE = 'manga_local_image_links.json'  # Output file lokal untuk link gambar
-MAX_COMICS_TO_PROCESS = 50  # Jumlah komik yang akan diproses
+MAX_COMICS_TO_PROCESS = 2000  # Jumlah komik yang akan diproses (testing synopsis)
 PROGRESS_FILE = 'scrape_links_progress.json'
 
 
 # Auto Update Mode (cek semua komik yang ada chapter baru)
-AUTO_UPDATE_MODE = True  # Set True untuk auto cek semua komik
-AUTO_UPDATE_MAX_COMICS = 255  # Max komik yang di-cek per run (untuk avoid timeout)
+AUTO_UPDATE_MODE = True  # Set True untuk auto cek semua komik (disabled for testing)
+AUTO_UPDATE_MAX_COMICS = 2000  # Max komik yang di-cek per run (untuk avoid timeout)
 
 # Speed Configuration
 DELAY_BETWEEN_CHAPTERS = 0.5  # Delay antar chapter (detik) - Turunkan untuk lebih cepat
@@ -300,62 +300,123 @@ def has_new_chapters(supabase, comic_url, comic_slug):
 # ==================== SCRAPING FUNCTIONS ====================
 
 def scrape_comic_details(comic_url):
-    """Scrape detail komik dari halaman detail"""
+    """Scrape detail komik dari halaman detail - komikindo.ch structure"""
     try:
         print(f"  → Mengambil detail dari: {comic_url}")
         response = requests.get(comic_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
 
-        # Ambil informasi dasar
-        title_element = soup.select_one('.komik_info-content-body-title')
+        # Ambil informasi dasar - h1.entry-title (komikindo.ch)
+        title_element = soup.find('h1', class_='entry-title')
         title = title_element.get_text(strip=True) if title_element else 'Unknown'
+        # Remove "Komik " prefix
+        title = re.sub(r'^Komik\s*', '', title).strip()
 
-        # Ambil genre
+        # Ambil genre - div.genre-info a (komikindo.ch)
         genres = []
-        genre_elements = soup.select('.komik_info-content-genre a')
-        for genre in genre_elements:
-            genres.append(genre.get_text(strip=True))
+        genre_info = soup.find('div', class_='genre-info')
+        if genre_info:
+            genre_links = genre_info.find_all('a')
+            genres = [a.get_text(strip=True) for a in genre_links]
 
-        # Ambil synopsis
-        synopsis_element = soup.select_one('.komik_info-description-sinopsis')
-        synopsis = synopsis_element.get_text(strip=True) if synopsis_element else ''
+        # Ambil synopsis - div.entry-content-sinopsis atau p di entry-content (komikindo.ch)
+        synopsis = ''
+        # Try specific synopsis div first
+        sinopsis_div = soup.select_one('.entry-content-sinopsis, .entry-content .sinopsis')
+        if sinopsis_div:
+            synopsis = sinopsis_div.get_text(strip=True)
+        else:
+            # Fallback: get all p elements and find the one with actual content
+            synopsis_element = soup.select_one('.entry-content')
+            if synopsis_element:
+                # Get all paragraphs
+                paragraphs = synopsis_element.find_all('p')
+                for p in paragraphs:
+                    text = p.get_text(strip=True)
+                    # Skip short text or text that starts with "Manhwa" or contains boilerplate
+                    if len(text) > 50 and 'yang dibuat oleh komikus' not in text:
+                        synopsis = text
+                        break
+                # If still no good synopsis, get the first p with substantial content
+                if not synopsis and paragraphs:
+                    for p in paragraphs:
+                        text = p.get_text(strip=True)
+                        if len(text) > 20:
+                            synopsis = text
+                            break
 
-        # Ambil metadata (Type, Status, Author, dll)
+        # Clean up synopsis
+        if synopsis:
+            # Remove "Manhwa/Manhua/Manga X yang dibuat oleh komikus bernama Y ini bercerita tentang" prefix
+            # Pattern matches: "Manhwa X yang dibuat oleh komikus bernama Y ini bercerita tentang"
+            synopsis = re.sub(
+                r'^(Manhwa|Manhua|Manga)\s+[^.]+yang dibuat oleh[^.]+bercerita tentang\s*',
+                '', synopsis, flags=re.IGNORECASE | re.DOTALL
+            )
+            # Also try simpler pattern if above didn't work
+            synopsis = re.sub(
+                r'^.*?bercerita tentang\s*',
+                '', synopsis, flags=re.IGNORECASE | re.DOTALL
+            )
+            # Normalize whitespace (remove excessive spaces/newlines)
+            synopsis = re.sub(r'\s+', ' ', synopsis).strip()
+            # Remove leading quotes if any
+            synopsis = synopsis.strip('"').strip()
+
+        # Ambil metadata dari div.spe (komikindo.ch)
         metadata = {}
-        meta_elements = soup.select('.komik_info-content-meta span')
-        for meta in meta_elements:
-            text = meta.get_text(strip=True)
-            if ':' in text:
-                key, value = text.split(':', 1)
-                metadata[key.strip()] = value.strip()
+        spe = soup.find('div', class_='spe')
+        if spe:
+            spans = spe.find_all('span')
+            for span in spans:
+                text = span.get_text(strip=True)
+                if 'Status:' in text:
+                    metadata['Status'] = text.replace('Status:', '').strip()
+                if 'Jenis Komik:' in text:
+                    type_link = span.find('a')
+                    if type_link:
+                        metadata['Type'] = type_link.get_text(strip=True)
+                if 'Pengarang:' in text:
+                    metadata['Author'] = text.replace('Pengarang:', '').strip()
+                if 'Ilustrator:' in text:
+                    metadata['Ilustrator'] = text.replace('Ilustrator:', '').strip()
 
-        # Ambil cover URL
-        cover_element = soup.select_one('.komik_info-content-thumbnail img')
-        cover_url = cover_element['src'] if cover_element and 'src' in cover_element.attrs else None
+        # Ambil cover URL - div.thumb img (komikindo.ch)
+        cover_element = soup.select_one('.thumb img')
+        cover_url = None
+        if cover_element:
+            cover_url = cover_element.get('src') or cover_element.get('data-src')
 
-        # Ambil daftar chapter
+        # Ambil daftar chapter - div#chapter_list (komikindo.ch)
         chapter_list = []
-        chapter_elements = soup.select('.komik_info-chapters-item')
+        chapter_container = soup.find('div', id='chapter_list')
+        if chapter_container:
+            ul = chapter_container.find('ul')
+            if ul:
+                lis = ul.find_all('li')
+                for li in lis:
+                    try:
+                        lchx = li.find('span', class_='lchx')
+                        if lchx:
+                            a = lchx.find('a')
+                            if a:
+                                chapter_text = a.get_text(strip=True)
+                                chapter_text = re.sub(r'\s+', ' ', chapter_text).strip()
+                                chapter_link = a.get('href', '')
 
-        for chapter_elem in chapter_elements:
-            link_element = chapter_elem.select_one('.chapter-link-item')
-            time_element = chapter_elem.select_one('.chapter-link-time')
+                                # Release date
+                                dt = li.find('span', class_='dt')
+                                waktu_rilis = dt.get_text(strip=True) if dt else 'N/A'
+                                waktu_rilis_iso = convert_relative_time_to_iso(waktu_rilis)
 
-            if link_element:
-                # Normalize whitespace di chapter title
-                chapter_text = link_element.get_text(strip=True).replace('\n', ' ')
-                chapter_text = re.sub(r'\s+', ' ', chapter_text).strip()
-
-                # Ambil waktu rilis dan konversi ke ISO 8601
-                waktu_rilis_raw = time_element.get_text(strip=True) if time_element else 'N/A'
-                waktu_rilis_iso = convert_relative_time_to_iso(waktu_rilis_raw)
-
-                chapter_list.append({
-                    'chapter': chapter_text,
-                    'link': link_element['href'],
-                    'waktu_rilis': waktu_rilis_iso  # Gunakan format ISO 8601
-                })
+                                chapter_list.append({
+                                    'chapter': chapter_text,
+                                    'link': chapter_link,
+                                    'waktu_rilis': waktu_rilis_iso
+                                })
+                    except:
+                        pass
 
         return {
             'title': title,
@@ -371,27 +432,36 @@ def scrape_comic_details(comic_url):
         return None
 
 def scrape_chapter_images(chapter_url):
-    """Scrape link gambar dari chapter menggunakan selector .main-reading-area"""
+    """Scrape link gambar dari chapter - support multiple selectors"""
     try:
         response = requests.get(chapter_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
 
-        # Cari div dengan class "main-reading-area"
-        reading_area = soup.select_one('.main-reading-area')
-
-        if not reading_area:
-            print(f"    ⚠️  Tidak menemukan .main-reading-area")
-            return []
-
-        # Ambil semua img tag di dalam reading area
         image_urls = []
-        images = reading_area.find_all('img')
 
-        for img in images:
-            image_url = img.get('src')
-            if image_url and image_url.strip().startswith('http'):
-                image_urls.append(image_url)
+        # Try multiple selectors in order of priority
+        selectors = [
+            '#chimg-auh img',          # komikindo.ch structure
+            '.chapter-image img',       # Alternative komikindo structure
+            '#Baca_Komik img',          # Alternative ID
+            '.img-landmine img',        # Parent container
+            '.main-reading-area img',   # komikcast structure
+        ]
+
+        for selector in selectors:
+            images = soup.select(selector)
+            if images:
+                for img in images:
+                    image_url = img.get('src')
+                    if image_url and image_url.strip().startswith('http'):
+                        image_urls.append(image_url)
+                if image_urls:
+                    print(f"    ✓ Found {len(image_urls)} images using '{selector}'")
+                    break
+
+        if not image_urls:
+            print(f"    ⚠️  Tidak menemukan gambar dengan selector apapun")
 
         return image_urls
 
