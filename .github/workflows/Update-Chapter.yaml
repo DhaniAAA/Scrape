@@ -12,7 +12,7 @@ on:
       max_manhwa:
         description: "Maximum number of Manhwa to scrape"
         required: false
-        default: "2000"
+        default: "1700"
 
   # 2. Pemicu OTOMATIS (sesuai jadwal)
   schedule:
