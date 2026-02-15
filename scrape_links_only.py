@@ -52,7 +52,7 @@ PROGRESS_FILE = 'scrape_links_progress.json'
 
 # Auto Update Mode (cek semua komik yang ada chapter baru)
 AUTO_UPDATE_MODE = True  # Set True untuk auto cek semua komik (disabled for testing)
-AUTO_UPDATE_MAX_COMICS = 100  # Max komik yang di-cek per run (untuk avoid timeout)
+AUTO_UPDATE_MAX_COMICS = 2000  # Max komik yang di-cek per run (untuk avoid timeout)
 
 # Speed Configuration
 DELAY_BETWEEN_CHAPTERS = 0.5  # Delay antar chapter (detik) - Turunkan untuk lebih cepat

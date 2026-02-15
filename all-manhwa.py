@@ -390,6 +390,13 @@ def main():
                     for ch in reversed(latest_chapters_data)
                 ]
 
+            # Tentukan lastUpdateTime dari waktu_rilis chapter terbaru
+            # Prioritas: waktu_rilis chapter terbaru → waktu scraping saat ini (fallback)
+            if latest_chapters_formatted and latest_chapters_formatted[0].get('waktu_rilis'):
+                last_update = latest_chapters_formatted[0]['waktu_rilis']
+            else:
+                last_update = datetime.now().strftime('%Y-%m-%dT%H:%M:%S+07:00')
+
             # Susun metadata
             manhwa_data = {
                 "slug": comic['slug'],
@@ -404,7 +411,7 @@ def main():
                 "rating": detail.get('rating', '0'),
                 "total_chapters": detail.get('total_chapters', 0),
                 "latestChapters": latest_chapters_formatted,
-                "lastUpdateTime": datetime.now().strftime('%Y-%m-%dT%H:%M:%S+07:00')  # ISO 8601 format
+                "lastUpdateTime": last_update  # ISO 8601 - berdasar waktu rilis chapter terbaru
             }
 
             all_metadata.append(manhwa_data)
@@ -418,7 +425,19 @@ def main():
 
     print(f"\n Selesai memproses {len(all_metadata)} manhwa.")
 
-    # 3. Simpan ke file JSON lokal
+    # 3. Pre-sort berdasarkan waktu rilis chapter terbaru (descending)
+    # Ini memastikan JSON yang disimpan sudah terurut "Update Terbaru" di atas
+    def get_sort_key(item):
+        """Ambil timestamp chapter terbaru untuk sorting."""
+        chapters = item.get('latestChapters', [])
+        if chapters and chapters[0].get('waktu_rilis'):
+            return chapters[0]['waktu_rilis']
+        return item.get('lastUpdateTime', '1970-01-01T00:00:00+07:00')
+
+    all_metadata.sort(key=get_sort_key, reverse=True)
+    print(f" Data telah di-sort berdasarkan chapter terbaru (newest first)")
+
+    # 4. Simpan ke file JSON lokal
     if all_metadata:
         print(f"\n Menyimpan ke '{OUTPUT_FILE}'...")
         with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
@@ -430,7 +449,7 @@ def main():
         for item in all_metadata[:3]:
             print(f"  - {item['title']} ({item['type']}) - {item['total_chapters']} chapters")
 
-        # 4. Upload ke Supabase
+        # 5. Upload ke Supabase
         if supabase:
             print(f"\n Meng-upload ke Supabase Storage...")
             upload_json("all-manhwa-metadata.json", all_metadata)
