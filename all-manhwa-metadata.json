@@ -1,5 +1,66 @@
 [
   {
+    "slug": "magic-emperor",
+    "title": "Magic Emperor",
+    "cover_url": "https://komikindo.ch/wp-content/uploads/2020/12/Komik-Demonic-Emperor-197x319.jpg",
+    "pengarang": "Jay Herbin",
+    "ilustrator": "Song Ui-Seop",
+    "genres": [
+      "Magic",
+      "Matrial Arts",
+      "Reincarnated",
+      "Supernatural"
+    ],
+    "genre": "Magic,Reincarnated, Martial Arts, Shounen",
+    "type": "Manhua",
+    "status": "Berjalan",
+    "rating": "8.3",
+    "total_chapters": 819,
+    "latestChapters": [
+      {
+        "title": "Chapter 819",
+        "waktu_rilis": "2026-02-12T13:55:00+07:00",
+        "slug": "magic-emperor-chapter-819"
+      },
+      {
+        "title": "Chapter 818",
+        "waktu_rilis": "2026-02-12T13:55:00+07:00",
+        "slug": "magic-emperor-chapter-818"
+      }
+    ],
+    "lastUpdateTime": "2026-02-12T13:55:00+07:00"
+  },
+  {
+    "slug": "strength-through-adversity-my-cultivation-knows-no-limits",
+    "title": "Strength Through Adversity My Cultivation Knows No Limits",
+    "cover_url": "https://komikindo.ch/wp-content/uploads/2024/12/Komik-Strength-Through-Adversity-My-Cultivation-Knows-No-Limits-236x315.jpg",
+    "pengarang": "火珑果漫画",
+    "ilustrator": "火珑果漫画",
+    "genres": [
+      "Magic",
+      "Matrial Arts",
+      "Supernatural"
+    ],
+    "genre": "Magic, Martial Arts, Shounen",
+    "type": "Manhua",
+    "status": "Berjalan",
+    "rating": "7",
+    "total_chapters": 99,
+    "latestChapters": [
+      {
+        "title": "Chapter 99",
+        "waktu_rilis": "2026-02-15T10:57:00+07:00",
+        "slug": "strength-through-adversity-my-cultivation-knows-no-limits-chapter-99"
+      },
+      {
+        "title": "Chapter 98",
+        "waktu_rilis": "2026-02-14T22:57:00+07:00",
+        "slug": "strength-through-adversity-my-cultivation-knows-no-limits-chapter-98"
+      }
+    ],
+    "lastUpdateTime": "2026-02-15T10:57:00+07:00"
+  },
+  {
     "slug": "tang-clan-legend",
     "title": "Tang Clan Legend",
     "cover_url": "https://komikindo.ch/wp-content/uploads/2025/08/Tang-Clan-Legend-220x319.jpg",
