@@ -20,7 +20,7 @@ CATATAN:
 - Gunakan thread count yang wajar untuk menghindari rate limiting
 """
 
-import requests
+import cloudscraper
 from bs4 import BeautifulSoup
 import json
 import os
@@ -64,26 +64,85 @@ MAX_CHAPTER_WORKERS = 5  # Jumlah thread untuk scraping chapter secara parallel
 MAX_COMIC_WORKERS = 2  # Jumlah thread untuk scraping komik secara parallel
 ENABLE_PARALLEL = True  # Set False untuk disable parallel processing
 
-# Headers untuk request - lebih realistic untuk menghindari 403
-USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-]
+# Cloudscraper session - bypasses Cloudflare anti-bot (403 on GitHub Actions)
+# Thread-local storage for per-thread scraper sessions
+_thread_local = threading.local()
 
+def get_scraper():
+    """Get or create a cloudscraper session for the current thread.
+    Using thread-local storage so each thread has its own session."""
+    if not hasattr(_thread_local, 'scraper'):
+        _thread_local.scraper = cloudscraper.create_scraper(
+            browser={
+                'browser': 'chrome',
+                'platform': 'windows',
+                'desktop': True,
+            },
+            delay=5,  # delay for JS challenge solving
+        )
+        # Set default headers that look like a real browser
+        _thread_local.scraper.headers.update({
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9,id;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Sec-Ch-Ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"',
+            'Cache-Control': 'max-age=0',
+        })
+    return _thread_local.scraper
+
+def safe_get(url, timeout=None, max_retries=3):
+    """Wrapper around cloudscraper.get with retry + exponential backoff.
+    Handles 403/503 from Cloudflare automatically via cloudscraper."""
+    if timeout is None:
+        timeout = REQUEST_TIMEOUT
+
+    scraper = get_scraper()
+    last_error = None
+
+    for attempt in range(max_retries):
+        try:
+            if attempt > 0:
+                # Exponential backoff: 3-6s, 6-12s, 12-24s, ...
+                delay = random.uniform(3 * (2 ** (attempt - 1)), 6 * (2 ** (attempt - 1)))
+                print(f"  ⏳ Retry {attempt + 1}/{max_retries} in {delay:.1f}s...")
+                time.sleep(delay)
+
+            # Set referer to look like we're browsing the site
+            scraper.headers['Referer'] = 'https://komikindo.ch/'
+
+            response = scraper.get(url, timeout=timeout)
+            response.raise_for_status()
+            return response
+
+        except Exception as e:
+            last_error = e
+            status = getattr(getattr(e, 'response', None), 'status_code', None)
+            if status == 403:
+                print(f"  ⚠ 403 Forbidden (attempt {attempt + 1}/{max_retries})")
+                # Re-create scraper session on 403 to get fresh TLS fingerprint
+                _thread_local.scraper = None
+                scraper = get_scraper()
+            elif status == 503:
+                print(f"  ⚠ 503 Service Unavailable (attempt {attempt + 1}/{max_retries})")
+            else:
+                print(f"  ⚠ Request error (attempt {attempt + 1}/{max_retries}): {e}")
+
+    # All retries exhausted
+    raise last_error
+
+# Legacy compatibility
 def get_headers():
-    """Get random headers untuk menghindari blocking"""
-    return {
-        'User-Agent': random.choice(USER_AGENTS),
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-    }
+    return get_scraper().headers
 
-# Legacy HEADERS for compatibility
-HEADERS = get_headers()
+HEADERS = {}
 
 # ==================== FUNGSI UTILITAS ====================
 
@@ -344,157 +403,138 @@ def has_new_chapters(supabase, comic_url, comic_slug):
 
 def scrape_comic_details(comic_url, max_retries=3):
     """Scrape detail komik dari halaman detail - komikindo.ch structure"""
-    for attempt in range(max_retries):
-        try:
-            print(f"  → Mengambil detail dari: {comic_url}")
-            # Random delay untuk menghindari rate limiting
-            if attempt > 0:
-                delay = random.uniform(2, 5)
-                time.sleep(delay)
+    try:
+        print(f"  → Mengambil detail dari: {comic_url}")
+        response = safe_get(comic_url, max_retries=max_retries)
+        soup = BeautifulSoup(response.text, 'html.parser')
 
-            response = requests.get(comic_url, headers=get_headers(), timeout=REQUEST_TIMEOUT)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, 'html.parser')
+        # Ambil informasi dasar - h1.entry-title (komikindo.ch)
+        title_element = soup.find('h1', class_='entry-title')
+        title = title_element.get_text(strip=True) if title_element else 'Unknown'
+        # Remove "Komik " prefix
+        title = re.sub(r'^Komik\s*', '', title).strip()
 
-            # Ambil informasi dasar - h1.entry-title (komikindo.ch)
-            title_element = soup.find('h1', class_='entry-title')
-            title = title_element.get_text(strip=True) if title_element else 'Unknown'
-            # Remove "Komik " prefix
-            title = re.sub(r'^Komik\s*', '', title).strip()
+        # Ambil genre - div.genre-info a (komikindo.ch)
+        genres = []
+        genre_info = soup.find('div', class_='genre-info')
+        if genre_info:
+            genre_links = genre_info.find_all('a')
+            genres = [a.get_text(strip=True) for a in genre_links]
 
-            # Ambil genre - div.genre-info a (komikindo.ch)
-            genres = []
-            genre_info = soup.find('div', class_='genre-info')
-            if genre_info:
-                genre_links = genre_info.find_all('a')
-                genres = [a.get_text(strip=True) for a in genre_links]
-
-            # Ambil synopsis - div.entry-content-sinopsis atau p di entry-content (komikindo.ch)
-            synopsis = ''
-            # Try specific synopsis div first
-            sinopsis_div = soup.select_one('.entry-content-sinopsis, .entry-content .sinopsis')
-            if sinopsis_div:
-                synopsis = sinopsis_div.get_text(strip=True)
-            else:
-                # Fallback: get all p elements and find the one with actual content
-                synopsis_element = soup.select_one('.entry-content')
-                if synopsis_element:
-                    # Get all paragraphs
-                    paragraphs = synopsis_element.find_all('p')
+        # Ambil synopsis - div.entry-content-sinopsis atau p di entry-content (komikindo.ch)
+        synopsis = ''
+        # Try specific synopsis div first
+        sinopsis_div = soup.select_one('.entry-content-sinopsis, .entry-content .sinopsis')
+        if sinopsis_div:
+            synopsis = sinopsis_div.get_text(strip=True)
+        else:
+            # Fallback: get all p elements and find the one with actual content
+            synopsis_element = soup.select_one('.entry-content')
+            if synopsis_element:
+                # Get all paragraphs
+                paragraphs = synopsis_element.find_all('p')
+                for p in paragraphs:
+                    text = p.get_text(strip=True)
+                    # Skip short text or text that starts with "Manhwa" or contains boilerplate
+                    if len(text) > 50 and 'yang dibuat oleh komikus' not in text:
+                        synopsis = text
+                        break
+                # If still no good synopsis, get the first p with substantial content
+                if not synopsis and paragraphs:
                     for p in paragraphs:
                         text = p.get_text(strip=True)
-                        # Skip short text or text that starts with "Manhwa" or contains boilerplate
-                        if len(text) > 50 and 'yang dibuat oleh komikus' not in text:
+                        if len(text) > 20:
                             synopsis = text
                             break
-                    # If still no good synopsis, get the first p with substantial content
-                    if not synopsis and paragraphs:
-                        for p in paragraphs:
-                            text = p.get_text(strip=True)
-                            if len(text) > 20:
-                                synopsis = text
-                                break
 
-            # Clean up synopsis
-            if synopsis:
-                # Remove "Manhwa/Manhua/Manga X yang dibuat oleh komikus bernama Y ini bercerita tentang" prefix
-                synopsis = re.sub(
-                    r'^(Manhwa|Manhua|Manga)\s+[^.]+yang dibuat oleh[^.]+bercerita tentang\s*',
-                    '', synopsis, flags=re.IGNORECASE | re.DOTALL
-                )
-                # Also try simpler pattern if above didn't work
-                synopsis = re.sub(
-                    r'^.*?bercerita tentang\s*',
-                    '', synopsis, flags=re.IGNORECASE | re.DOTALL
-                )
-                # Normalize whitespace (remove excessive spaces/newlines)
-                synopsis = re.sub(r'\s+', ' ', synopsis).strip()
-                # Remove leading quotes if any
-                synopsis = synopsis.strip('"').strip()
+        # Clean up synopsis
+        if synopsis:
+            # Remove "Manhwa/Manhua/Manga X yang dibuat oleh komikus bernama Y ini bercerita tentang" prefix
+            synopsis = re.sub(
+                r'^(Manhwa|Manhua|Manga)\s+[^.]+yang dibuat oleh[^.]+bercerita tentang\s*',
+                '', synopsis, flags=re.IGNORECASE | re.DOTALL
+            )
+            # Also try simpler pattern if above didn't work
+            synopsis = re.sub(
+                r'^.*?bercerita tentang\s*',
+                '', synopsis, flags=re.IGNORECASE | re.DOTALL
+            )
+            # Normalize whitespace (remove excessive spaces/newlines)
+            synopsis = re.sub(r'\s+', ' ', synopsis).strip()
+            # Remove leading quotes if any
+            synopsis = synopsis.strip('"').strip()
 
-            # Ambil metadata dari div.spe (komikindo.ch)
-            metadata = {}
-            spe = soup.find('div', class_='spe')
-            if spe:
-                spans = spe.find_all('span')
-                for span in spans:
-                    text = span.get_text(strip=True)
-                    if 'Status:' in text:
-                        metadata['Status'] = text.replace('Status:', '').strip()
-                    if 'Jenis Komik:' in text:
-                        type_link = span.find('a')
-                        if type_link:
-                            metadata['Type'] = type_link.get_text(strip=True)
-                    if 'Pengarang:' in text:
-                        metadata['Author'] = text.replace('Pengarang:', '').strip()
-                    if 'Ilustrator:' in text:
-                        metadata['Ilustrator'] = text.replace('Ilustrator:', '').strip()
+        # Ambil metadata dari div.spe (komikindo.ch)
+        metadata = {}
+        spe = soup.find('div', class_='spe')
+        if spe:
+            spans = spe.find_all('span')
+            for span in spans:
+                text = span.get_text(strip=True)
+                if 'Status:' in text:
+                    metadata['Status'] = text.replace('Status:', '').strip()
+                if 'Jenis Komik:' in text:
+                    type_link = span.find('a')
+                    if type_link:
+                        metadata['Type'] = type_link.get_text(strip=True)
+                if 'Pengarang:' in text:
+                    metadata['Author'] = text.replace('Pengarang:', '').strip()
+                if 'Ilustrator:' in text:
+                    metadata['Ilustrator'] = text.replace('Ilustrator:', '').strip()
 
-            # Ambil cover URL - div.thumb img (komikindo.ch)
-            cover_element = soup.select_one('.thumb img')
-            cover_url = None
-            if cover_element:
-                cover_url = cover_element.get('src') or cover_element.get('data-src')
+        # Ambil cover URL - div.thumb img (komikindo.ch)
+        cover_element = soup.select_one('.thumb img')
+        cover_url = None
+        if cover_element:
+            cover_url = cover_element.get('src') or cover_element.get('data-src')
 
-            # Ambil daftar chapter - div#chapter_list (komikindo.ch)
-            chapter_list = []
-            chapter_container = soup.find('div', id='chapter_list')
-            if chapter_container:
-                ul = chapter_container.find('ul')
-                if ul:
-                    lis = ul.find_all('li')
-                    for li in lis:
-                        try:
-                            lchx = li.find('span', class_='lchx')
-                            if lchx:
-                                a = lchx.find('a')
-                                if a:
-                                    chapter_text = a.get_text(strip=True)
-                                    chapter_text = re.sub(r'\s+', ' ', chapter_text).strip()
-                                    chapter_link = a.get('href', '')
+        # Ambil daftar chapter - div#chapter_list (komikindo.ch)
+        chapter_list = []
+        chapter_container = soup.find('div', id='chapter_list')
+        if chapter_container:
+            ul = chapter_container.find('ul')
+            if ul:
+                lis = ul.find_all('li')
+                for li in lis:
+                    try:
+                        lchx = li.find('span', class_='lchx')
+                        if lchx:
+                            a = lchx.find('a')
+                            if a:
+                                chapter_text = a.get_text(strip=True)
+                                chapter_text = re.sub(r'\s+', ' ', chapter_text).strip()
+                                chapter_link = a.get('href', '')
 
-                                    # Release date
-                                    dt = li.find('span', class_='dt')
-                                    waktu_rilis = dt.get_text(strip=True) if dt else 'N/A'
-                                    waktu_rilis_iso = convert_relative_time_to_iso(waktu_rilis)
+                                # Release date
+                                dt = li.find('span', class_='dt')
+                                waktu_rilis = dt.get_text(strip=True) if dt else 'N/A'
+                                waktu_rilis_iso = convert_relative_time_to_iso(waktu_rilis)
 
-                                    chapter_list.append({
-                                        'chapter': chapter_text,
-                                        'link': chapter_link,
-                                        'waktu_rilis': waktu_rilis_iso
-                                    })
-                        except:
-                            pass
+                                chapter_list.append({
+                                    'chapter': chapter_text,
+                                    'link': chapter_link,
+                                    'waktu_rilis': waktu_rilis_iso
+                                })
+                    except:
+                        pass
 
-            return {
-                'title': title,
-                'genres': genres,
-                'synopsis': synopsis,
-                'metadata': metadata,
-                'cover_url': cover_url,
-                'chapters': chapter_list
-            }
+        return {
+            'title': title,
+            'genres': genres,
+            'synopsis': synopsis,
+            'metadata': metadata,
+            'cover_url': cover_url,
+            'chapters': chapter_list
+        }
 
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 403:
-                print(f"  ⚠ 403 Forbidden (attempt {attempt + 1}/{max_retries})")
-                if attempt < max_retries - 1:
-                    time.sleep(random.uniform(3, 7))
-                    continue
-            print(f"  ✗ Error scraping detail: {e}")
-            return None
-        except Exception as e:
-            print(f"  ✗ Error scraping detail: {e}")
-            if attempt < max_retries - 1:
-                continue
-            return None
-    return None
+    except Exception as e:
+        print(f"  ✗ Error scraping detail: {e}")
+        return None
 
 def scrape_chapter_images(chapter_url):
     """Scrape link gambar dari chapter - support multiple selectors"""
     try:
-        response = requests.get(chapter_url, headers=get_headers(), timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()
+        response = safe_get(chapter_url, max_retries=3)
         soup = BeautifulSoup(response.text, 'html.parser')
 
         image_urls = []

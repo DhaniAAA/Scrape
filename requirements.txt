@@ -1,4 +1,4 @@
-requests==2.31.0
+cloudscraper>=1.2.71
 beautifulsoup4==4.12.2
 supabase>=2.22.0
 storage3>=2.22.0
