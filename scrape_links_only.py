@@ -118,20 +118,41 @@ def get_cloudscraper_session():
         _thread_local.cloudscraper_session = scraper
     return _thread_local.cloudscraper_session
 
+def is_real_page(response):
+    """Cek apakah response adalah halaman asli (bukan Cloudflare challenge).
+    Cloudflare challenge: ukuran kecil (<10KB) atau ada marker CF di HTML.
+    """
+    # Halaman asli komikindo minimal 30KB
+    if len(response.text) < 10000:
+        return False
+    text_lower = response.text[:3000].lower()  # cek di bagian awal saja
+    cf_markers = [
+        'just a moment',
+        'cf-browser-verification',
+        'checking your browser',
+        'enable javascript',
+        'ray id',
+        'cloudflare',
+    ]
+    if any(m in text_lower for m in cf_markers):
+        return False
+    return True
+
 def safe_get(url, timeout=None, max_retries=3):
     """Hybrid request engine (seperti old.py + GitHub Actions support):
-    - Coba requests biasa dulu (cepat, seperti old.py)
-    - Jika kena 403 (Cloudflare), LANGSUNG switch ke cloudscraper tanpa buang retry
-    - Cloudscraper retry lagi dengan exponential backoff hingga max_retries terpenuhi
+    - Coba requests.get biasa dulu (cepat, seperti old.py)
+    - Jika kena 403 atau response bukan halaman asli, switch ke cloudscraper
+    - Validasi setiap response: jika Cloudflare challenge terdeteksi, retry
+    - Cloudscraper retry dengan exponential backoff
     """
     if timeout is None:
         timeout = REQUEST_TIMEOUT
 
     last_error = None
     use_cloudscraper = False
+    cf_attempt = 0
 
     attempts_left = max_retries
-    cf_attempt = 0  # berapa kali sudah pakai cloudscraper
 
     while attempts_left > 0:
         try:
@@ -147,24 +168,37 @@ def safe_get(url, timeout=None, max_retries=3):
                 cf_attempt += 1
             else:
                 # Gunakan requests.get LANGSUNG seperti old.py (bukan Session)
-                # Session menyebabkan encoding issue (response 18KB vs 84KB yang benar)
                 response = requests.get(url, headers=get_plain_headers(), timeout=timeout)
 
             response.raise_for_status()
-            return response  # sukses
+
+            # Validasi response: apakah halaman asli atau Cloudflare challenge?
+            if not is_real_page(response):
+                print(f"  Cloudflare challenge terdeteksi (size={len(response.text)}B) - switching to cloudscraper...")
+                if not use_cloudscraper:
+                    use_cloudscraper = True
+                    # Jangan kurangi attempts, langsung retry dengan cloudscraper
+                    continue
+                else:
+                    # Cloudscraper juga gagal bypass: reset session dan retry
+                    print(f"  Reset cloudscraper session...")
+                    if hasattr(_thread_local, 'cloudscraper_session'):
+                        del _thread_local.cloudscraper_session
+                    attempts_left -= 1
+                    continue
+
+            return response  # sukses - halaman asli
 
         except requests.exceptions.HTTPError as e:
             last_error = e
             status = getattr(e.response, 'status_code', None)
             if status == 403:
                 if not use_cloudscraper:
-                    # Pertama kali 403: langsung switch ke cloudscraper, JANGAN kurangi attempts
                     print(f"  403 Forbidden - switching to cloudscraper...")
                     use_cloudscraper = True
-                    continue  # coba lagi tanpa kurangi attempts_left
+                    continue  # langsung retry, jangan kurangi attempts_left
                 else:
-                    # Sudah pakai cloudscraper tapi masih 403: reset session dan retry
-                    print(f"  403 Forbidden with cloudscraper (cf_attempt={cf_attempt}) - resetting session...")
+                    print(f"  403 with cloudscraper - resetting session...")
                     if hasattr(_thread_local, 'cloudscraper_session'):
                         del _thread_local.cloudscraper_session
             elif status == 503:
@@ -177,7 +211,7 @@ def safe_get(url, timeout=None, max_retries=3):
 
         attempts_left -= 1
 
-    raise last_error
+    raise last_error or Exception(f"Failed to fetch {url} after {max_retries} attempts")
 
 # Legacy compatibility
 def get_headers():
