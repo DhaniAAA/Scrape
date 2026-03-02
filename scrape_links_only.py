@@ -20,7 +20,14 @@ CATATAN:
 - Gunakan thread count yang wajar untuk menghindari rate limiting
 """
 
-import cloudscraper
+# curl_cffi: library TLS fingerprint browser asli, lebih efektif dari cloudscraper untuk bypass CF
+try:
+    from curl_cffi import requests as cf_requests
+    CURL_CFFI_AVAILABLE = True
+except ImportError:
+    CURL_CFFI_AVAILABLE = False
+    import cloudscraper  # fallback
+
 import requests
 from bs4 import BeautifulSoup
 import json
@@ -87,56 +94,50 @@ def get_plain_headers():
         'Referer': 'https://komikindo.ch/',
     }
 
-def get_cloudscraper_session():
-    """Get or create a cloudscraper session for the current thread.
-    Using thread-local storage so each thread has its own session."""
-    if not hasattr(_thread_local, 'cloudscraper_session'):
-        scraper = cloudscraper.create_scraper(
-            browser={
-                'browser': 'chrome',
-                'platform': 'windows',
-                'desktop': True,
-            },
-            delay=5,  # Needed to solve Cloudflare JS challenge (GitHub Actions)
-        )
-        # Set default headers that look like a real browser
-        scraper.headers.update({
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9,id;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1',
-            'Sec-Ch-Ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-            'Sec-Ch-Ua-Mobile': '?0',
-            'Sec-Ch-Ua-Platform': '"Windows"',
-            'Cache-Control': 'max-age=0',
-        })
-        _thread_local.cloudscraper_session = scraper
-    return _thread_local.cloudscraper_session
+def get_cf_session():
+    """Buat session bypass Cloudflare menggunakan curl_cffi (impersonate browser asli).
+    Jauh lebih efektif dari cloudscraper untuk GitHub Actions.
+    Fallback ke cloudscraper jika curl_cffi tidak tersedia."""
+    if not hasattr(_thread_local, 'cf_session') or _thread_local.cf_session is None:
+        if CURL_CFFI_AVAILABLE:
+            # curl_cffi: gunakan impersonasi Chrome yang sesungguhnya
+            session = cf_requests.Session(impersonate="chrome120")
+            session.headers.update({
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9,id;q=0.8',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Referer': 'https://komikindo.ch/',
+            })
+            print(f"  [CF Bypass] Using curl_cffi (Chrome120 impersonation)")
+        else:
+            # Fallback: cloudscraper
+            session = cloudscraper.create_scraper(
+                browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True},
+                delay=5,
+            )
+            session.headers.update({
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Referer': 'https://komikindo.ch/',
+            })
+            print(f"  [CF Bypass] Using cloudscraper (curl_cffi not available)")
+        _thread_local.cf_session = session
+    return _thread_local.cf_session
 
 def is_real_page(response):
-    """Cek apakah response adalah halaman asli (bukan Cloudflare challenge).
-    Cloudflare challenge: ukuran kecil (<10KB) atau ada marker CF di HTML.
+    """Cek apakah response adalah halaman komikindo asli.
+    Cek konten POSITIF (ada chapter_list atau entry-title) bukan deteksi CF.
+    Ini lebih reliable karena CF challenge tidak punya konten komikindo.
     """
-    # Halaman asli komikindo minimal 30KB
-    if len(response.text) < 10000:
+    text = response.text
+    # Cek ukuran minimum (halaman komikindo > 30KB)
+    if len(text) < 15000:
         return False
-    text_lower = response.text[:3000].lower()  # cek di bagian awal saja
-    cf_markers = [
-        'just a moment',
-        'cf-browser-verification',
-        'checking your browser',
-        'enable javascript',
-        'ray id',
-        'cloudflare',
-    ]
-    if any(m in text_lower for m in cf_markers):
-        return False
-    return True
+    # Cek konten positif: ada elemen khas komikindo
+    return 'chapter_list' in text or 'entry-title' in text or 'genre-info' in text
 
 def safe_get(url, timeout=None, max_retries=3):
     """Hybrid request engine (seperti old.py + GitHub Actions support):
@@ -162,7 +163,7 @@ def safe_get(url, timeout=None, max_retries=3):
                     delay = random.uniform(3 * (2 ** (cf_attempt - 1)), 6 * (2 ** (cf_attempt - 1)))
                     print(f"  Retry cloudscraper in {delay:.1f}s...")
                     time.sleep(delay)
-                session = get_cloudscraper_session()
+                session = get_cf_session()
                 session.headers['Referer'] = 'https://komikindo.ch/'
                 response = session.get(url, timeout=timeout)
                 cf_attempt += 1
@@ -180,10 +181,9 @@ def safe_get(url, timeout=None, max_retries=3):
                     # Jangan kurangi attempts, langsung retry dengan cloudscraper
                     continue
                 else:
-                    # Cloudscraper juga gagal bypass: reset session dan retry
-                    print(f"  Reset cloudscraper session...")
-                    if hasattr(_thread_local, 'cloudscraper_session'):
-                        del _thread_local.cloudscraper_session
+                    # CF bypass juga gagal: reset session dan retry
+                    print(f"  CF bypass masih gagal - reset session...")
+                    _thread_local.cf_session = None
                     attempts_left -= 1
                     continue
 
@@ -198,9 +198,8 @@ def safe_get(url, timeout=None, max_retries=3):
                     use_cloudscraper = True
                     continue  # langsung retry, jangan kurangi attempts_left
                 else:
-                    print(f"  403 with cloudscraper - resetting session...")
-                    if hasattr(_thread_local, 'cloudscraper_session'):
-                        del _thread_local.cloudscraper_session
+                    print(f"  403 with CF bypass - resetting session...")
+                    _thread_local.cf_session = None
             elif status == 503:
                 print(f"  503 Service Unavailable")
             else:
