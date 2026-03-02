@@ -21,6 +21,7 @@ CATATAN:
 """
 
 import cloudscraper
+import requests
 from bs4 import BeautifulSoup
 import json
 import os
@@ -64,24 +65,42 @@ MAX_CHAPTER_WORKERS = 5  # Jumlah thread untuk scraping chapter secara parallel
 MAX_COMIC_WORKERS = 2  # Jumlah thread untuk scraping komik secara parallel
 ENABLE_PARALLEL = True  # Set False untuk disable parallel processing
 
-# Cloudscraper session - bypasses Cloudflare anti-bot (403 on GitHub Actions)
 # Thread-local storage for per-thread scraper sessions
 _thread_local = threading.local()
 
-def get_scraper():
+# Rotating user agents (sama seperti old.py untuk avoid 403)
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+]
+
+def get_plain_headers():
+    """Rotating headers seperti old.py - sederhana dan efektif."""
+    return {
+        'User-Agent': random.choice(USER_AGENTS),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Referer': 'https://komikindo.ch/',
+    }
+
+def get_cloudscraper_session():
     """Get or create a cloudscraper session for the current thread.
     Using thread-local storage so each thread has its own session."""
-    if not hasattr(_thread_local, 'scraper'):
-        _thread_local.scraper = cloudscraper.create_scraper(
+    if not hasattr(_thread_local, 'cloudscraper_session'):
+        scraper = cloudscraper.create_scraper(
             browser={
                 'browser': 'chrome',
                 'platform': 'windows',
                 'desktop': True,
             },
-            delay=5,  # delay for JS challenge solving
+            delay=5,  # Needed to solve Cloudflare JS challenge (GitHub Actions)
         )
         # Set default headers that look like a real browser
-        _thread_local.scraper.headers.update({
+        scraper.headers.update({
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9,id;q=0.8',
             'Accept-Encoding': 'gzip, deflate, br',
@@ -96,51 +115,73 @@ def get_scraper():
             'Sec-Ch-Ua-Platform': '"Windows"',
             'Cache-Control': 'max-age=0',
         })
-    return _thread_local.scraper
+        _thread_local.cloudscraper_session = scraper
+    return _thread_local.cloudscraper_session
 
 def safe_get(url, timeout=None, max_retries=3):
-    """Wrapper around cloudscraper.get with retry + exponential backoff.
-    Handles 403/503 from Cloudflare automatically via cloudscraper."""
+    """Hybrid request engine (seperti old.py + GitHub Actions support):
+    - Coba requests biasa dulu (cepat, seperti old.py)
+    - Jika kena 403 (Cloudflare), LANGSUNG switch ke cloudscraper tanpa buang retry
+    - Cloudscraper retry lagi dengan exponential backoff hingga max_retries terpenuhi
+    """
     if timeout is None:
         timeout = REQUEST_TIMEOUT
 
-    scraper = get_scraper()
     last_error = None
+    use_cloudscraper = False
 
-    for attempt in range(max_retries):
+    attempts_left = max_retries
+    cf_attempt = 0  # berapa kali sudah pakai cloudscraper
+
+    while attempts_left > 0:
         try:
-            if attempt > 0:
-                # Exponential backoff: 3-6s, 6-12s, 12-24s, ...
-                delay = random.uniform(3 * (2 ** (attempt - 1)), 6 * (2 ** (attempt - 1)))
-                print(f"  ⏳ Retry {attempt + 1}/{max_retries} in {delay:.1f}s...")
-                time.sleep(delay)
+            if use_cloudscraper:
+                if cf_attempt > 0:
+                    # Backoff sebelum retry cloudscraper
+                    delay = random.uniform(3 * (2 ** (cf_attempt - 1)), 6 * (2 ** (cf_attempt - 1)))
+                    print(f"  Retry cloudscraper in {delay:.1f}s...")
+                    time.sleep(delay)
+                session = get_cloudscraper_session()
+                session.headers['Referer'] = 'https://komikindo.ch/'
+                response = session.get(url, timeout=timeout)
+                cf_attempt += 1
+            else:
+                # Gunakan requests.get LANGSUNG seperti old.py (bukan Session)
+                # Session menyebabkan encoding issue (response 18KB vs 84KB yang benar)
+                response = requests.get(url, headers=get_plain_headers(), timeout=timeout)
 
-            # Set referer to look like we're browsing the site
-            scraper.headers['Referer'] = 'https://komikindo.ch/'
-
-            response = scraper.get(url, timeout=timeout)
             response.raise_for_status()
-            return response
+            return response  # sukses
 
+        except requests.exceptions.HTTPError as e:
+            last_error = e
+            status = getattr(e.response, 'status_code', None)
+            if status == 403:
+                if not use_cloudscraper:
+                    # Pertama kali 403: langsung switch ke cloudscraper, JANGAN kurangi attempts
+                    print(f"  403 Forbidden - switching to cloudscraper...")
+                    use_cloudscraper = True
+                    continue  # coba lagi tanpa kurangi attempts_left
+                else:
+                    # Sudah pakai cloudscraper tapi masih 403: reset session dan retry
+                    print(f"  403 Forbidden with cloudscraper (cf_attempt={cf_attempt}) - resetting session...")
+                    if hasattr(_thread_local, 'cloudscraper_session'):
+                        del _thread_local.cloudscraper_session
+            elif status == 503:
+                print(f"  503 Service Unavailable")
+            else:
+                print(f"  HTTP error: {e}")
         except Exception as e:
             last_error = e
-            status = getattr(getattr(e, 'response', None), 'status_code', None)
-            if status == 403:
-                print(f"  ⚠ 403 Forbidden (attempt {attempt + 1}/{max_retries})")
-                # Re-create scraper session on 403 to get fresh TLS fingerprint
-                _thread_local.scraper = None
-                scraper = get_scraper()
-            elif status == 503:
-                print(f"  ⚠ 503 Service Unavailable (attempt {attempt + 1}/{max_retries})")
-            else:
-                print(f"  ⚠ Request error (attempt {attempt + 1}/{max_retries}): {e}")
+            print(f"  Request error: {e}")
 
-    # All retries exhausted
+        attempts_left -= 1
+
     raise last_error
 
 # Legacy compatibility
 def get_headers():
-    return get_scraper().headers
+    return get_plain_headers()
 
 HEADERS = {}
 
@@ -391,6 +432,13 @@ def has_new_chapters(supabase, comic_url, comic_slug):
         # Get existing chapters dari Supabase
         existing_chapters = get_existing_chapters(supabase, comic_slug)
         total_chapters_supabase = len(existing_chapters)
+
+        # GUARD: Jika website mengembalikan 0 chapter tapi Supabase punya data,
+        # ini kemungkinan besar adalah kegagalan scraping (Cloudflare, selector berubah, dll)
+        # Jangan anggap sebagai "tidak ada chapter baru" — perlakukan sebagai error.
+        if total_chapters_website == 0 and total_chapters_supabase > 0:
+            print(f"\n    ⚠ Website mengembalikan 0 chapter (kemungkinan gagal scrape), skip...")
+            return None, -1, -1
 
         # Ada chapter baru jika total di website > total di Supabase
         has_new = total_chapters_website > total_chapters_supabase
@@ -874,32 +922,33 @@ def main():
             comic_url = comic.get('Link', '')
             comic_slug = sanitize_filename(comic_title)
 
-            # Skip komik yang sudah completed di Supabase
-            if is_comic_completed_in_supabase(supabase, comic_slug):
-                skipped_completed += 1
-                continue
-
             print(f"\n  [{checked_count + 1}/{AUTO_UPDATE_MAX_COMICS}] Checking: {comic_title}", end=" ")
 
             # Tambah delay random untuk menghindari rate limiting
-            time.sleep(random.uniform(0.5, 1.5))
+            time.sleep(random.uniform(0.2, 0.5))
 
-            # Cek apakah ada chapter baru
+            # Cek apakah ada chapter baru (SELALU cek, termasuk komik 'Completed')
             has_new, total_web, total_db = has_new_chapters(supabase, comic_url, comic_slug)
 
             # Handle error case (has_new is None, total_web is -1)
             if has_new is None or total_web == -1:
-                print(f"⚠️  Error scraping (skip)")
+                print(f"Error scraping (skip)")
                 checked_count += 1
                 time.sleep(0.5)
                 continue
 
             if has_new:
                 new_chapters = total_web - total_db
-                print(f"✅ {new_chapters} chapter baru! ({total_db} → {total_web})")
+                print(f"[NEW] {new_chapters} chapter baru! ({total_db} -> {total_web})")
                 indices_to_process.append(idx)
             else:
-                print(f"⏭️  No update ({total_db} chapters)")
+                # Tidak ada chapter baru -- sekarang cek apakah komik sudah completed
+                # Jika completed DAN tidak ada chapter baru, tandai agar bisa di-skip lebih cepat
+                if is_comic_completed_in_supabase(supabase, comic_slug):
+                    print(f"[SKIP] No update ({total_db} chapters) [Completed]")
+                    skipped_completed += 1
+                else:
+                    print(f"[OK] No update ({total_db} chapters)")
 
             checked_count += 1
             time.sleep(0.5)  # Delay antar check
